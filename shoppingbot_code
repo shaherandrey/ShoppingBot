@@ -1,0 +1,204 @@
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import (
+    Message, 
+    ReplyKeyboardMarkup, 
+    KeyboardButton, 
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton, 
+    CallbackQuery,
+    ReplyKeyboardRemove
+)
+from aiogram.filters import Command
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+import asyncio
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TOKEN = os.getenv("BOT_TOKEN")
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+class Form(StatesGroup):
+    waiting_for_product = State()
+    waiting_for_edit = State()
+    adding_product = State()
+
+
+WriteList = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📝 Написать список")]
+    ],
+    resize_keyboard=True
+)
+
+FinishList = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="✅ Закончить список")]
+    ],
+    resize_keyboard=True
+)
+
+EditList = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="✏️ Изменить список")],
+        [KeyboardButton(text="➕Добавить товар")],
+        [KeyboardButton(text="Все правильно")]
+    ],
+    resize_keyboard=True
+)
+
+Sure = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Да")]
+    ],
+    resize_keyboard=True
+)
+
+
+@dp.message(Command("start"))
+async def start(message: Message):
+    await message.answer("👋", reply_markup=WriteList)
+
+@dp.message(F.text == "📝 Написать список")
+async def write_list(message: Message, state: FSMContext):
+    await message.answer("Что нужно купить?", reply_markup=FinishList)
+    await state.update_data(products=[], checked=[])
+    await state.set_state(Form.waiting_for_product)
+
+@dp.message(F.text == "✅ Закончить список")
+async def are_you_sure(message: Message, state: FSMContext):
+    data = await state.get_data()
+    await message.answer("Вот твой список:")
+    await message.answer("\n".join(data["products"]))
+    await message.answer("Правильно?", reply_markup=EditList)
+
+@dp.message(F.text == "➕Добавить товар")
+async def new_product(message: Message, state: FSMContext):
+    await message.answer("Какой товар добавить?")
+    await state.set_state(Form.adding_product)
+
+@dp.message(F.text == "Все правильно")
+async def finished_list(message: Message, state: FSMContext):
+    data = await state.get_data()
+    buttons = []
+    checked = [False] * len(data["products"])
+    await state.update_data(checked=checked)
+    for index, product in enumerate(data["products"]):
+         button = InlineKeyboardButton(
+            text=f"⬜ {product}",
+            callback_data=f"product_{index}"
+         )
+         buttons.append(button)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[button] for button in buttons]
+    )
+
+    await message.answer(
+    "Список:",
+    reply_markup=ReplyKeyboardRemove()
+)
+
+    await message.answer(
+    "\n".join(data["products"]),
+    reply_markup=keyboard
+)
+
+
+@dp.message(F.text == "Да")
+async def yes(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("👍", reply_markup=WriteList)
+
+@dp.message(F.text == "✏️ Изменить список")
+async def edit_list(message: Message, state: FSMContext):
+    data = await state.get_data()
+    buttons = []
+    for index, product in enumerate(data["products"]):
+        button = InlineKeyboardButton(
+            text=f"✏️ {product}",
+            callback_data=f"edit_{index}"
+        )
+        buttons.append(button)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[button] for button in buttons]
+    )
+
+    await message.answer(
+        "Какой товар изменить?",
+        reply_markup=keyboard
+    )
+    
+@dp.message(Form.waiting_for_product)
+async def get_product(message: Message, state: FSMContext):
+    data = await state.get_data()
+    data["products"].append(message.text)
+    await state.update_data(products=data["products"])
+
+@dp.message(Form.adding_product)
+async def add_product(message: Message, state: FSMContext):
+    data = await state.get_data()
+    data["products"].append(message.text)
+    await state.update_data(products=data["products"])
+    await message.answer("Список изменён:")
+    await message.answer("\n".join(data["products"]))
+    await message.answer("Добавить еще?", reply_markup=EditList)
+
+@dp.callback_query(F.data.startswith("edit_"))
+async def edit_button_pressed(callback: CallbackQuery, state: FSMContext):
+    index = int(callback.data.split("_")[1])
+    await state.update_data(edit_index=index)
+    await state.set_state(Form.waiting_for_edit)
+    await callback.message.answer("На что заменить этот товар?")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("product_"))
+async def product_pressed(callback: CallbackQuery, state: FSMContext):
+    index = int(callback.data.split("_")[1])
+    data = await state.get_data()
+    data["checked"][index] = not data["checked"][index]
+    await state.update_data(checked=data["checked"])
+    if all(data["checked"]):
+        await callback.message.answer("Все куплено?", reply_markup=Sure)
+    buttons = []
+    for index, product in enumerate(data["products"]):
+        if data["checked"][index]:
+            text = f"✅ {product}"
+        else:
+            text = f"⬜ {product}"
+
+        button = InlineKeyboardButton(
+            text=text,
+            callback_data=f"product_{index}"
+        )
+
+        buttons.append(button)
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[button] for button in buttons]
+    )
+
+    await callback.message.edit_reply_markup(reply_markup=keyboard)
+    await callback.answer()
+
+@dp.message(Form.waiting_for_edit)
+async def edit_product(message: Message, state: FSMContext):
+    data = await state.get_data()
+    index = data["edit_index"]
+    data["products"][index] = message.text
+    await state.update_data(products=data["products"])
+    await message.answer("Список изменён:")
+    await message.answer("\n".join(data["products"]))
+    await message.answer("Все правильно?", reply_markup=EditList)
+
+
+async def main():
+    await dp.start_polling(bot)
+
+asyncio.run(main())
+
